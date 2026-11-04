@@ -33,6 +33,8 @@ $pyiArgs = @(
   '--noconfirm', '--clean',
   '--name', 'ZEELoad',
   '--console',
+  # Frozen Python ignores PYTHONUTF8; force UTF-8 for Chinese CLI and GUI logs.
+  '--python-option', 'X utf8',
   '--uac-admin',
   '--icon', $icon,
   '--add-data', "$addon;addons",
