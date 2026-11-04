@@ -1,0 +1,136 @@
+name: Build Windows x64
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/build-windows.yml
+      - windows/**
+      - addons/**
+      - assets/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Windows x64 portable build
+    runs-on: windows-2022
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      PYTHONUTF8: '1'
+      PYTHONIOENCODING: utf-8
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12 x64
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+          architecture: x64
+          cache: pip
+          cache-dependency-path: windows/requirements-build.txt
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install -r windows/requirements-build.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed.' }
+          python -m pip check
+          if ($LASTEXITCODE -ne 0) { throw 'Dependency check failed.' }
+
+      - name: Run upstream self-check
+        run: python windows/selftest.py
+
+      - name: Build portable application
+        run: ./windows/build_exe.ps1 -SkipDependencyInstall
+
+      - name: Verify bundled runtime
+        run: |
+          $bundle = Join-Path $PWD 'windows/dist/ZEELoad'
+          $exe = Join-Path $bundle 'ZEELoad.exe'
+          foreach ($relative in @('ZEELoad.exe', '_internal/python312.dll', '_internal/addons/zeekr_log.py')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $bundle $relative))) {
+              throw "Missing bundled file: $relative"
+            }
+          }
+          foreach ($pattern in @('WinDivert*.dll', 'WinDivert*.sys')) {
+            if (-not (Get-ChildItem -LiteralPath $bundle -Recurse -Filter $pattern -File)) {
+              throw "Missing bundled driver component: $pattern"
+            }
+          }
+          & $exe --help
+          if ($LASTEXITCODE -ne 0) { throw 'Bundled application failed to start.' }
+          $version = & $exe --mitmdump-inner --version
+          if ($LASTEXITCODE -ne 0) { throw 'Bundled mitmproxy failed to start.' }
+          $version | Write-Output
+          if (($version -join "`n") -notmatch 'Mitmproxy:\s*12\.3\.1') {
+            throw 'Unexpected bundled mitmproxy version.'
+          }
+          $options = & $exe --mitmdump-inner --options
+          if ($LASTEXITCODE -ne 0) { throw 'Bundled proxy options could not be loaded.' }
+          if (($options -join "`n") -notmatch '(?m)^emudhra:') {
+            throw 'Required emudhra option is missing.'
+          }
+
+      - name: Package Windows download
+        id: package
+        run: |
+          $bundle = Join-Path $PWD 'windows/dist/ZEELoad'
+          python -m pip freeze | Set-Content -LiteralPath (Join-Path $bundle 'BUILD-DEPENDENCIES.txt') -Encoding utf8
+          if ($LASTEXITCODE -ne 0) { throw 'Could not record build dependencies.' }
+          @{
+            repository = $env:GITHUB_REPOSITORY
+            commit = $env:GITHUB_SHA
+            run = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+            python = (python --version)
+            platform = 'Windows x64'
+            upstreamVersion = 'v1.0.1'
+          } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $bundle 'BUILD-INFO.json') -Encoding utf8
+          @'
+          ZEELoad Windows x64
+
+          1. 完整解压 ZEELoad 文件夹，保留 ZEELoad.exe 和 _internal 的相对位置。
+          2. 双击 ZEELoad.exe，按提示允许管理员权限，无需另装 Python。
+          3. 电脑先联网并开启移动热点，让车机连接电脑提供的 Wi-Fi。
+          4. 在工具里选择自行准备的 APK，点击开始，再按项目说明操作车机应用商店。
+          5. 安装结束后点击停止并退出工具，恢复日常车机网络。
+
+          本包不含 Apple Music 或其他第三方 APK。车型和车机系统兼容性需要实际验证。
+          构建来源见 BUILD-INFO.json，依赖版本见 BUILD-DEPENDENCIES.txt。
+          '@ | Set-Content -LiteralPath (Join-Path $bundle '使用说明.txt') -Encoding utf8
+          New-Item -ItemType Directory -Path release -Force | Out-Null
+          $zip = Join-Path $PWD 'release/ZEELoad-Windows-x64.zip'
+          Compress-Archive -LiteralPath $bundle -DestinationPath $zip -CompressionLevel Optimal -Force
+          $hash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          "sha256=$hash" >> $env:GITHUB_OUTPUT
+          "### Windows x64 build" >> $env:GITHUB_STEP_SUMMARY
+          "Source commit: $env:GITHUB_SHA" >> $env:GITHUB_STEP_SUMMARY
+          "SHA256: $hash" >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Upload Windows download
+        id: upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          path: release/ZEELoad-Windows-x64.zip
+          archive: false
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Add download link to summary
+        env:
+          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+        run: |
+          "Download: $env:ARTIFACT_URL" >> $env:GITHUB_STEP_SUMMARY
+          'Extract the entire ZEELoad folder and run ZEELoad.exe. No separate Python installation is required.' >> $env:GITHUB_STEP_SUMMARY

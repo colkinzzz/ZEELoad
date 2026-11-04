@@ -10,15 +10,20 @@
 #
 # 环境要求：Windows 10/11 x64、Python 3.12+、管理员权限（仅运行时需要）
 
-param([switch]$OneFile)
+param([switch]$OneFile, [switch]$SkipDependencyInstall)
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $root
 
-Write-Host '== 安装依赖 =='
-python -m pip install -U pip
-python -m pip install -U mitmproxy pydivert pyinstaller
+python -c "import struct, sys; assert sys.version_info >= (3, 12) and struct.calcsize('P') == 8, 'Use Python 3.12+ x64'"
+if ($LASTEXITCODE -ne 0) { throw 'Python 3.12+ x64 is required.' }
+
+if (-not $SkipDependencyInstall) {
+  Write-Host '== 安装依赖 =='
+  python -m pip install -r (Join-Path $root 'requirements-build.txt')
+  if ($LASTEXITCODE -ne 0) { throw 'Build dependency installation failed.' }
+}
 
 $addon = (Join-Path $root '..\addons\zeekr_log.py')
 $icon  = (Join-Path $root '..\assets\zeeload.ico')
@@ -44,6 +49,7 @@ if ($OneFile) { $pyiArgs = @('--onefile') + $pyiArgs }
 
 Write-Host '== 开始打包 =='
 python -m PyInstaller @pyiArgs
+if ($LASTEXITCODE -ne 0) { throw 'PyInstaller build failed.' }
 
 if ($OneFile) {
   Write-Host "完成：$root\dist\ZEELoad.exe"

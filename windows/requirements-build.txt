@@ -1,0 +1,4 @@
+# Match the upstream-tested proxy/driver pair and record resolved dependencies in each build.
+mitmproxy==12.3.1
+pydivert==3.1.3
+pyinstaller==6.22.3
